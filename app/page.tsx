@@ -42,11 +42,19 @@ export default async function Home() {
         </header>
 
         <section className="space-y-4">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <h2 className="text-2xl font-semibold">Problem Set</h2>
-            <span className="text-sm text-slate-600">
-              {problems.length} problems available
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-semibold">Problem Set</h2>
+              <span className="text-sm text-slate-600">
+                {problems.length} problems available
+              </span>
+            </div>
+            <Link
+              href="/problems/new"
+              className="rounded-full border border-slate-200 bg-white/70 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-700 shadow-sm transition hover:border-amber-300 hover:text-amber-700"
+            >
+              Create Problem
+            </Link>
           </div>
           <div className="grid gap-4">
             {problems.length === 0 ? (

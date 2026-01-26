@@ -7,7 +7,18 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 app.use(cors());
-app.use(express.json({ limit: "512kb" }));
+app.use(express.json({ limit: "5mb" }));
+
+function slugify(value) {
+  if (!value) {
+    return "";
+  }
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 app.get("/health", async (req, res) => {
   try {
@@ -43,6 +54,352 @@ app.get("/problems", async (req, res) => {
     res.json({ problems: rows });
   } catch {
     res.status(500).json({ error: "Failed to load problems." });
+  }
+});
+
+app.post("/preview-judge", async (req, res) => {
+  const {
+    languageKey,
+    sourceCode,
+    judgeType,
+    checkerLanguageKey,
+    checkerSource,
+    timeLimitMs,
+    memoryLimitKb,
+    testcases,
+  } = req.body || {};
+
+  if (!languageKey || typeof sourceCode !== "string") {
+    res.status(400).json({ error: "languageKey and sourceCode are required." });
+    return;
+  }
+
+  if (!Array.isArray(testcases) || testcases.length === 0) {
+    res.status(400).json({ error: "At least one testcase is required." });
+    return;
+  }
+
+  const safeJudgeType = judgeType === "custom" ? "custom" : "default";
+
+  const normalizedTestcases = testcases.map((item, index) => ({
+    id: index + 1,
+    name:
+      typeof item?.name === "string" && item.name.trim()
+        ? item.name.trim()
+        : null,
+    input: typeof item?.input === "string" ? item.input : "",
+    expected_output:
+      typeof item?.expectedOutput === "string" ? item.expectedOutput : "",
+  }));
+
+  if (normalizedTestcases.some((item) => !item.input.trim())) {
+    res.status(400).json({ error: "Every testcase needs input." });
+    return;
+  }
+
+  if (
+    safeJudgeType === "default" &&
+    normalizedTestcases.some((item) => !item.expected_output.trim())
+  ) {
+    res
+      .status(400)
+      .json({ error: "Expected output is required for default judging." });
+    return;
+  }
+
+  if (
+    safeJudgeType === "custom" &&
+    (!checkerLanguageKey ||
+      typeof checkerSource !== "string" ||
+      !checkerSource.trim())
+  ) {
+    res.status(400).json({
+      error: "Checker language and script are required for custom judging.",
+    });
+    return;
+  }
+
+  try {
+    const languageResult = await pool.query(
+      `SELECT id, key, name, source_ext, compile_command, run_command,
+              default_time_limit_ms, default_memory_limit_kb
+       FROM languages
+       WHERE key = $1 AND enabled = TRUE`,
+      [languageKey]
+    );
+
+    if (languageResult.rows.length === 0) {
+      res.status(404).json({ error: "Language not found." });
+      return;
+    }
+
+    let checker = null;
+    if (safeJudgeType === "custom") {
+      const checkerLanguageResult = await pool.query(
+        `SELECT id, key, name, source_ext, compile_command, run_command,
+                default_time_limit_ms, default_memory_limit_kb
+         FROM languages
+         WHERE key = $1 AND enabled = TRUE`,
+        [checkerLanguageKey]
+      );
+
+      if (checkerLanguageResult.rows.length === 0) {
+        res.status(400).json({ error: "Checker language not found." });
+        return;
+      }
+
+      checker = {
+        language: checkerLanguageResult.rows[0],
+        sourceCode: checkerSource.trim(),
+      };
+    }
+
+    const parsedTimeLimit = Number.parseInt(timeLimitMs, 10);
+    const parsedMemoryLimit = Number.parseInt(memoryLimitKb, 10);
+
+    const problem = {
+      time_limit_ms: Number.isFinite(parsedTimeLimit) ? parsedTimeLimit : 2000,
+      memory_limit_kb: Number.isFinite(parsedMemoryLimit)
+        ? parsedMemoryLimit
+        : 262144,
+      judge_type: safeJudgeType,
+    };
+
+    const judgeResult = await judgeSubmission({
+      language: languageResult.rows[0],
+      problem,
+      testcases: normalizedTestcases,
+      sourceCode,
+      checker,
+    });
+
+    res.json({
+      verdict: judgeResult.verdict,
+      compileOutput: judgeResult.compileOutput,
+      results: judgeResult.results.map((result) => ({
+        testcaseId: result.testcaseId,
+        name: result.name,
+        status: result.status,
+        execTimeMs: result.execTimeMs,
+        memoryKb: result.memoryKb,
+        output: result.output,
+        error: result.error,
+      })),
+    });
+  } catch {
+    res.status(500).json({ error: "Failed to run validation." });
+  }
+});
+
+app.post("/problems", async (req, res) => {
+  const {
+    title,
+    slug,
+    statement,
+    constraints,
+    inputFormat,
+    outputFormat,
+    timeLimitMs,
+    memoryLimitKb,
+    difficulty,
+    judgeType,
+    checkerLanguageKey,
+    checkerSource,
+    testcases,
+  } = req.body || {};
+
+  const trimmedTitle = typeof title === "string" ? title.trim() : "";
+  const trimmedStatement =
+    typeof statement === "string" ? statement.trim() : "";
+  const normalizedSlug =
+    typeof slug === "string" && slug.trim()
+      ? slug.trim()
+      : slugify(trimmedTitle);
+  const safeJudgeType = judgeType === "custom" ? "custom" : "default";
+
+  if (!trimmedTitle || !trimmedStatement) {
+    res.status(400).json({ error: "Title and statement are required." });
+    return;
+  }
+
+  if (!normalizedSlug) {
+    res.status(400).json({ error: "Slug is required." });
+    return;
+  }
+
+  if (!Array.isArray(testcases) || testcases.length === 0) {
+    res.status(400).json({ error: "At least one testcase is required." });
+    return;
+  }
+
+  const normalizedTestcases = testcases.map((item, index) => {
+    const name =
+      typeof item?.name === "string" && item.name.trim()
+        ? item.name.trim()
+        : null;
+    const input = typeof item?.input === "string" ? item.input : "";
+    const expectedOutput =
+      typeof item?.expectedOutput === "string" ? item.expectedOutput : "";
+    const isSample = Boolean(item?.isSample);
+    return {
+      name,
+      input,
+      expectedOutput,
+      isSample,
+      sortOrder: index + 1,
+    };
+  });
+
+  if (normalizedTestcases.some((item) => !item.input.trim())) {
+    res.status(400).json({ error: "Every testcase needs input." });
+    return;
+  }
+
+  if (
+    safeJudgeType === "default" &&
+    normalizedTestcases.some((item) => !item.expectedOutput.trim())
+  ) {
+    res
+      .status(400)
+      .json({ error: "Expected output is required for default judging." });
+    return;
+  }
+
+  if (
+    safeJudgeType === "custom" &&
+    (!checkerLanguageKey ||
+      typeof checkerSource !== "string" ||
+      !checkerSource.trim())
+  ) {
+    res.status(400).json({
+      error: "Checker language and script are required for custom judging.",
+    });
+    return;
+  }
+
+  const parsedTimeLimit = Number.parseInt(timeLimitMs, 10);
+  const parsedMemoryLimit = Number.parseInt(memoryLimitKb, 10);
+  const parsedDifficulty = Number.parseInt(difficulty, 10);
+
+  const finalTimeLimit = Number.isFinite(parsedTimeLimit)
+    ? parsedTimeLimit
+    : 2000;
+  const finalMemoryLimit = Number.isFinite(parsedMemoryLimit)
+    ? parsedMemoryLimit
+    : 262144;
+  const finalDifficulty = Number.isFinite(parsedDifficulty)
+    ? parsedDifficulty
+    : null;
+
+  const normalizedConstraints =
+    typeof constraints === "string" && constraints.trim()
+      ? constraints.trim()
+      : null;
+  const normalizedInputFormat =
+    typeof inputFormat === "string" && inputFormat.trim()
+      ? inputFormat.trim()
+      : null;
+  const normalizedOutputFormat =
+    typeof outputFormat === "string" && outputFormat.trim()
+      ? outputFormat.trim()
+      : null;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const authorResult = await client.query(
+      "SELECT id FROM users WHERE username = 'guest' LIMIT 1"
+    );
+    const authorId = authorResult.rows[0]?.id ?? null;
+
+    let resolvedCheckerLanguage = null;
+    if (safeJudgeType === "custom") {
+      const checkerLanguageResult = await client.query(
+        `SELECT key
+         FROM languages
+         WHERE key = $1 AND enabled = TRUE
+         LIMIT 1`,
+        [checkerLanguageKey]
+      );
+
+      if (checkerLanguageResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        res.status(400).json({ error: "Checker language is invalid." });
+        return;
+      }
+
+      resolvedCheckerLanguage = checkerLanguageResult.rows[0].key;
+    }
+
+    const problemInsert = await client.query(
+      `INSERT INTO problems (
+         slug,
+         title,
+         statement,
+         constraints,
+         input_format,
+         output_format,
+         judge_type,
+         checker_language_key,
+         checker_source,
+         time_limit_ms,
+         memory_limit_kb,
+         difficulty,
+         source,
+         author_id,
+         is_visible,
+         published_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE, NOW())
+       RETURNING id, slug`,
+      [
+        normalizedSlug,
+        trimmedTitle,
+        trimmedStatement,
+        normalizedConstraints,
+        normalizedInputFormat,
+        normalizedOutputFormat,
+        safeJudgeType,
+        resolvedCheckerLanguage,
+        safeJudgeType === "custom" ? checkerSource.trim() : null,
+        finalTimeLimit,
+        finalMemoryLimit,
+        finalDifficulty,
+        "web",
+        authorId,
+      ]
+    );
+
+    const problemId = problemInsert.rows[0].id;
+
+    for (const testcase of normalizedTestcases) {
+      await client.query(
+        `INSERT INTO testcases
+          (problem_id, name, input, expected_output, is_sample, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          problemId,
+          testcase.name,
+          testcase.input,
+          testcase.expectedOutput,
+          testcase.isSample,
+          testcase.sortOrder,
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+    res.status(201).json({ problemId, slug: problemInsert.rows[0].slug });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") {
+      res.status(409).json({ error: "Slug is already in use." });
+    } else {
+      res.status(500).json({ error: "Failed to create problem." });
+    }
+  } finally {
+    client.release();
   }
 });
 
