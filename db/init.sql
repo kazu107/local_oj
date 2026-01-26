@@ -41,6 +41,9 @@ CREATE TABLE problems (
   constraints TEXT,
   input_format TEXT,
   output_format TEXT,
+  judge_type TEXT NOT NULL DEFAULT 'default',
+  checker_language_key TEXT,
+  checker_source TEXT,
   time_limit_ms INTEGER NOT NULL DEFAULT 2000,
   memory_limit_kb INTEGER NOT NULL DEFAULT 262144,
   difficulty INTEGER,
@@ -282,5 +285,108 @@ INSERT INTO problem_messages (problem_id, author_name, body)
 SELECT id, 'Staff', 'Ask questions or share hints here.'
 FROM problems
 WHERE slug = 'a-plus-b';
+
+WITH custom_problem AS (
+  INSERT INTO problems (
+    slug,
+    title,
+    statement,
+    editorial,
+    constraints,
+    input_format,
+    output_format,
+    judge_type,
+    checker_language_key,
+    checker_source,
+    time_limit_ms,
+    memory_limit_kb,
+    difficulty,
+    source,
+    author_id,
+    is_visible,
+    published_at
+  )
+  SELECT
+    'any-permutation',
+    'Any Permutation',
+    'Given an integer N, output any permutation of the integers from 1 to N.',
+    'Any ordering of 1..N is accepted. A simple answer is to print 1 2 3 ... N.',
+    '1 <= N <= 100000',
+    'N',
+    'Any permutation of 1..N (space-separated).',
+    'custom',
+    'nodejs',
+    $$const fs = require("fs");
+
+const raw = fs.readFileSync(0, "utf8");
+let payload = {};
+try {
+  payload = JSON.parse(raw || "{}");
+} catch {
+  console.log("Wrong Answer");
+  process.exit(0);
+}
+
+const input = typeof payload.input === "string" ? payload.input : "";
+const output = typeof payload.output === "string" ? payload.output : "";
+const tokensIn = input.trim().split(/\s+/);
+const n = Number.parseInt(tokensIn[0] || "", 10);
+
+if (!Number.isFinite(n) || n <= 0) {
+  console.log("Wrong Answer");
+  process.exit(0);
+}
+
+const tokensOut = output.trim().split(/\s+/).filter(Boolean);
+if (tokensOut.length !== n) {
+  console.log("Wrong Answer");
+  process.exit(0);
+}
+
+const seen = new Set();
+for (const token of tokensOut) {
+  if (!/^\d+$/.test(token)) {
+    console.log("Wrong Answer");
+    process.exit(0);
+  }
+  const value = Number.parseInt(token, 10);
+  if (value < 1 || value > n || seen.has(value)) {
+    console.log("Wrong Answer");
+    process.exit(0);
+  }
+  seen.add(value);
+}
+
+console.log("Accepted");
+$$,
+    2000,
+    262144,
+    120,
+    'custom',
+    (SELECT id FROM users WHERE username = 'guest'),
+    TRUE,
+    NOW()
+  RETURNING id
+)
+INSERT INTO testcases (problem_id, name, input, expected_output, is_sample, sort_order)
+SELECT
+  custom_problem.id,
+  data.name,
+  data.input,
+  data.expected_output,
+  data.is_sample,
+  data.sort_order
+FROM custom_problem
+CROSS JOIN (
+  VALUES
+    ('Sample 1', E'3\n', E'1 2 3\n', TRUE, 1),
+    ('Sample 2', E'5\n', E'1 2 3 4 5\n', TRUE, 2),
+    ('Hidden 1', E'1\n', E'1\n', FALSE, 3)
+) AS data(name, input, expected_output, is_sample, sort_order);
+
+INSERT INTO problem_messages (problem_id, author_name, body)
+SELECT id, 'Staff', 'This problem uses a custom checker that validates permutations.'
+FROM problems
+WHERE slug = 'any-permutation';
 
 COMMIT;

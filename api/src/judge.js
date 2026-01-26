@@ -37,6 +37,48 @@ function normalizeOutput(text) {
   return text.replace(/\r\n/g, "\n").trimEnd();
 }
 
+function parseCheckerVerdict(text) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith("{")) {
+    try {
+      const payload = JSON.parse(trimmed);
+      const value =
+        typeof payload === "string"
+          ? payload
+          : payload && typeof payload === "object"
+            ? payload.status ?? payload.result ?? payload.verdict
+            : payload;
+      if (typeof value === "boolean") {
+        return value ? "Accepted" : "Wrong Answer";
+      }
+      if (typeof value === "string") {
+        return parseCheckerVerdict(value);
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  const normalized = trimmed.toLowerCase();
+  if (
+    ["accepted", "ac", "ok", "pass", "passed", "true"].includes(normalized)
+  ) {
+    return "Accepted";
+  }
+  if (
+    ["wrong answer", "wrong", "wa", "fail", "failed", "false"].includes(
+      normalized
+    )
+  ) {
+    return "Wrong Answer";
+  }
+  return null;
+}
+
 async function getTimeCommandPath() {
   if (timeCommandChecked) {
     return cachedTimeCommand;
@@ -256,7 +298,9 @@ async function runTestcase(
   workDir,
   testcase,
   timeoutMs,
-  memoryLimitKb
+  memoryLimitKb,
+  checkerContext,
+  judgeType
 ) {
   const input = normalizeTestcaseText(testcase.input);
   const execResult = await executeProgram({
@@ -271,6 +315,54 @@ async function runTestcase(
 
   if (execResult.status !== "OK") {
     return execResult;
+  }
+
+  if (judgeType === "custom" && checkerContext) {
+    const checkerPayload = JSON.stringify({
+      input,
+      expectedOutput: normalizeTestcaseText(testcase.expected_output),
+      output: execResult.output ?? "",
+    });
+    const checkerResult = await executeProgram({
+      language: checkerContext.language,
+      sourcePath: checkerContext.sourcePath,
+      exePath: checkerContext.exePath,
+      workDir: checkerContext.workDir,
+      input: checkerPayload,
+      timeoutMs: Math.min(timeoutMs, 2000),
+      memoryLimitKb,
+    });
+
+    if (checkerResult.status !== "OK") {
+      return {
+        status: "System Error",
+        execTimeMs: execResult.execTimeMs,
+        memoryKb: execResult.memoryKb,
+        output: execResult.output,
+        error: checkerResult.error || checkerResult.output || "Checker failed.",
+      };
+    }
+
+    const checkerVerdict = parseCheckerVerdict(checkerResult.output ?? "");
+    if (!checkerVerdict) {
+      return {
+        status: "System Error",
+        execTimeMs: execResult.execTimeMs,
+        memoryKb: execResult.memoryKb,
+        output: execResult.output,
+        error:
+          checkerResult.output ||
+          "Checker returned an unrecognized verdict.",
+      };
+    }
+
+    return {
+      status: checkerVerdict,
+      execTimeMs: execResult.execTimeMs,
+      memoryKb: execResult.memoryKb,
+      output: execResult.output,
+      error: execResult.error,
+    };
   }
 
   const expected = normalizeOutput(
@@ -293,8 +385,11 @@ export async function judgeSubmission({
   problem,
   testcases,
   sourceCode,
+  checker,
 }) {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "oj-"));
+  let checkerWorkDir = null;
+  let checkerContext = null;
   const sourcePath = path.join(workDir, `Main.${language.source_ext}`);
   const exePath = path.join(workDir, "main");
 
@@ -318,10 +413,55 @@ export async function judgeSubmission({
       };
     }
 
+    if (problem.judge_type === "custom") {
+      if (!checker || !checker.language || !checker.sourceCode) {
+        return {
+          verdict: "System Error",
+          compileOutput: "Checker is not configured for this problem.",
+          results: [],
+          maxTimeMs: null,
+          maxMemoryKb: null,
+        };
+      }
+
+      checkerWorkDir = await fs.mkdtemp(path.join(os.tmpdir(), "oj-checker-"));
+      const checkerSourcePath = path.join(
+        checkerWorkDir,
+        `Checker.${checker.language.source_ext}`
+      );
+      const checkerExePath = path.join(checkerWorkDir, "checker");
+      await fs.writeFile(checkerSourcePath, checker.sourceCode, "utf8");
+
+      const checkerCompile = await compileIfNeeded(
+        checker.language,
+        checkerSourcePath,
+        checkerExePath,
+        checkerWorkDir
+      );
+
+      if (!checkerCompile.ok) {
+        return {
+          verdict: "System Error",
+          compileOutput: checkerCompile.output || "Failed to compile checker.",
+          results: [],
+          maxTimeMs: null,
+          maxMemoryKb: null,
+        };
+      }
+
+      checkerContext = {
+        language: checker.language,
+        sourcePath: checkerSourcePath,
+        exePath: checkerExePath,
+        workDir: checkerWorkDir,
+      };
+    }
+
     const timeoutMs =
       problem.time_limit_ms || language.default_time_limit_ms || 2000;
     const memoryLimitKb =
       problem.memory_limit_kb ?? language.default_memory_limit_kb ?? null;
+    const judgeType = problem.judge_type ?? "default";
 
     const results = [];
     for (const testcase of testcases) {
@@ -332,7 +472,9 @@ export async function judgeSubmission({
         workDir,
         testcase,
         timeoutMs,
-        memoryLimitKb
+        memoryLimitKb,
+        checkerContext,
+        judgeType
       );
       results.push({
         testcaseId: testcase.id,
@@ -370,6 +512,9 @@ export async function judgeSubmission({
     };
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
+    if (checkerWorkDir) {
+      await fs.rm(checkerWorkDir, { recursive: true, force: true });
+    }
   }
 }
 

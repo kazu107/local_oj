@@ -265,7 +265,12 @@ app.post("/submissions", async (req, res) => {
   const client = await pool.connect();
   try {
     const problemResult = await client.query(
-      `SELECT id, time_limit_ms, memory_limit_kb
+      `SELECT id,
+              time_limit_ms,
+              memory_limit_kb,
+              judge_type,
+              checker_language_key,
+              checker_source
        FROM problems
        WHERE id = $1`,
       [problemId]
@@ -275,6 +280,8 @@ app.post("/submissions", async (req, res) => {
       res.status(404).json({ error: "Problem not found." });
       return;
     }
+
+    const problem = problemResult.rows[0];
 
     const languageResult = await client.query(
       `SELECT id, key, name, source_ext, compile_command, run_command,
@@ -287,6 +294,32 @@ app.post("/submissions", async (req, res) => {
     if (languageResult.rows.length === 0) {
       res.status(404).json({ error: "Language not found." });
       return;
+    }
+
+    let checker = null;
+    if (problem.judge_type === "custom") {
+      if (!problem.checker_language_key || !problem.checker_source) {
+        res.status(500).json({ error: "Checker is not configured." });
+        return;
+      }
+
+      const checkerLanguageResult = await client.query(
+        `SELECT id, key, name, source_ext, compile_command, run_command,
+                default_time_limit_ms, default_memory_limit_kb
+         FROM languages
+         WHERE key = $1 AND enabled = TRUE`,
+        [problem.checker_language_key]
+      );
+
+      if (checkerLanguageResult.rows.length === 0) {
+        res.status(500).json({ error: "Checker language not found." });
+        return;
+      }
+
+      checker = {
+        language: checkerLanguageResult.rows[0],
+        sourceCode: problem.checker_source,
+      };
     }
 
     const testcasesResult = await client.query(
@@ -308,9 +341,10 @@ app.post("/submissions", async (req, res) => {
 
     const judgeResult = await judgeSubmission({
       language: languageResult.rows[0],
-      problem: problemResult.rows[0],
+      problem,
       testcases: testcasesResult.rows,
       sourceCode,
+      checker,
     });
 
     await client.query("BEGIN");
