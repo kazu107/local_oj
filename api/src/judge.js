@@ -104,6 +104,10 @@ function normalizeTestcaseText(text) {
     return text;
   }
   return text
+    .replace(/\\\\r\\\\n/g, "\n")
+    .replace(/\\\\n/g, "\n")
+    .replace(/\\\\r/g, "\n")
+    .replace(/\\\\t/g, "\t")
     .replace(/\\r\\n/g, "\n")
     .replace(/\\n/g, "\n")
     .replace(/\\r/g, "\n")
@@ -386,6 +390,7 @@ export async function judgeSubmission({
   testcases,
   sourceCode,
   checker,
+  onResult,
 }) {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "oj-"));
   let checkerWorkDir = null;
@@ -476,16 +481,62 @@ export async function judgeSubmission({
         checkerContext,
         judgeType
       );
-      results.push({
+      const enriched = {
         testcaseId: testcase.id,
         name: testcase.name,
         ...result,
-      });
+      };
+      results.push(enriched);
+      if (onResult) {
+        await onResult(enriched);
+      }
     }
 
     const verdict =
       results.find((item) => item.status !== "Accepted")?.status ??
       "Accepted";
+
+    let score = 0;
+    const testcaseById = new Map(testcases.map((item) => [item.id, item]));
+    const hasGroups = testcases.some((item) => item.group_id != null);
+    if (hasGroups) {
+      const groupStats = new Map();
+      for (const testcase of testcases) {
+        if (testcase.group_id == null) {
+          continue;
+        }
+        if (!groupStats.has(testcase.group_id)) {
+          groupStats.set(testcase.group_id, {
+            points: testcase.group_points ?? 0,
+            total: 0,
+            passed: 0,
+          });
+        }
+        groupStats.get(testcase.group_id).total += 1;
+      }
+
+      for (const result of results) {
+        if (result.status !== "Accepted") {
+          continue;
+        }
+        const testcase = testcaseById.get(result.testcaseId);
+        if (!testcase || testcase.group_id == null) {
+          continue;
+        }
+        const group = groupStats.get(testcase.group_id);
+        if (group) {
+          group.passed += 1;
+        }
+      }
+
+      for (const group of groupStats.values()) {
+        if (group.total > 0 && group.passed === group.total) {
+          score += group.points;
+        }
+      }
+    } else if (verdict === "Accepted") {
+      score = Number.isFinite(problem.points) ? problem.points : 0;
+    }
 
     const maxTimeMs = results.reduce((max, item) => {
       if (!item.execTimeMs) {
@@ -507,6 +558,7 @@ export async function judgeSubmission({
       verdict,
       compileOutput: compileResult.output,
       results,
+      score,
       maxTimeMs,
       maxMemoryKb,
     };

@@ -12,28 +12,20 @@ type Language = {
 
 type JudgeResult = {
   submissionId: number;
-  verdict: string;
-  compilerOutput?: string | null;
+  status: string;
   codeLength: number;
-  results: Array<{
-    testcaseId: number;
-    name: string | null;
-    status: string;
-    execTimeMs: number | null;
-    memoryKb: number | null;
-    output?: string | null;
-    error?: string | null;
-  }>;
 };
 
 type SubmissionFormProps = {
   problemId: number;
   languages: Language[];
+  onSubmitted?: (submissionId: number) => void;
 };
 
 export default function SubmissionForm({
   problemId,
   languages,
+  onSubmitted,
 }: SubmissionFormProps) {
   const defaultLanguage = languages[0]?.key ?? "cpp17";
   const [languageKey, setLanguageKey] = useState(defaultLanguage);
@@ -41,7 +33,6 @@ export default function SubmissionForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<JudgeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const displayCodeLength = result?.codeLength ?? code.length;
   const selectedLanguage = languages.find(
     (language) => language.key === languageKey
   );
@@ -91,6 +82,7 @@ export default function SubmissionForm({
       }
 
       setResult(payload);
+      onSubmitted?.(payload.submissionId);
     } catch (submitError) {
       const message =
         submitError instanceof Error
@@ -146,55 +138,14 @@ export default function SubmissionForm({
       ) : null}
 
       {result ? (
-        <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-semibold uppercase tracking-[0.2em] text-slate-500">
-              Verdict
-            </span>
-            <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">
-              {result.verdict}
-            </span>
-          </div>
-
-          {result.compilerOutput ? (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
-              <p className="font-semibold uppercase tracking-[0.2em] text-amber-700">
-                Compiler Output
-              </p>
-              <pre className="mt-2 whitespace-pre-wrap font-mono">
-                {result.compilerOutput}
-              </pre>
-            </div>
-          ) : null}
-
-          <div className="grid gap-2">
-            {result.results.map((caseResult) => (
-              <div
-                key={caseResult.testcaseId}
-                className="rounded-lg border border-slate-200 bg-slate-50 p-2"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-semibold">
-                    {caseResult.name ?? `Case ${caseResult.testcaseId}`}
-                  </span>
-                  <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                    {caseResult.status}
-                  </span>
-                </div>
-                <div className="mt-2 grid gap-1 text-[11px] text-slate-600 sm:grid-cols-2">
-                  <span>Result: {caseResult.status}</span>
-                  <span>Code length: {displayCodeLength} chars</span>
-                  <span>Time: {caseResult.execTimeMs ?? "-"} ms</span>
-                  <span>
-                    Memory:{" "}
-                    {caseResult.memoryKb != null
-                      ? `${Math.round(caseResult.memoryKb / 1024)} MB`
-                      : "-"}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+          <p className="font-semibold uppercase tracking-[0.2em] text-slate-500">
+            Submission received
+          </p>
+          <p className="mt-2 text-sm text-slate-700">
+            Submission #{result.submissionId} is judging. Open the Latest Verdict
+            tab to watch results appear.
+          </p>
         </div>
       ) : null}
     </form>

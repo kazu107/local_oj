@@ -46,7 +46,7 @@ app.get("/languages", async (req, res) => {
 app.get("/problems", async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id, slug, title, difficulty, time_limit_ms, memory_limit_kb
+      `SELECT id, slug, title, difficulty, time_limit_ms, memory_limit_kb, points
        FROM problems
        WHERE is_visible = TRUE
        ORDER BY id`
@@ -196,15 +196,18 @@ app.post("/problems", async (req, res) => {
     title,
     slug,
     statement,
+    editorial,
     constraints,
     inputFormat,
     outputFormat,
+    points,
     timeLimitMs,
     memoryLimitKb,
     difficulty,
     judgeType,
     checkerLanguageKey,
     checkerSource,
+    groups,
     testcases,
   } = req.body || {};
 
@@ -240,11 +243,14 @@ app.post("/problems", async (req, res) => {
     const input = typeof item?.input === "string" ? item.input : "";
     const expectedOutput =
       typeof item?.expectedOutput === "string" ? item.expectedOutput : "";
+    const parsedGroupId = Number.parseInt(item?.groupId, 10);
+    const groupId = Number.isFinite(parsedGroupId) ? parsedGroupId : null;
     const isSample = Boolean(item?.isSample);
     return {
       name,
       input,
       expectedOutput,
+      groupId,
       isSample,
       sortOrder: index + 1,
     };
@@ -277,9 +283,62 @@ app.post("/problems", async (req, res) => {
     return;
   }
 
+  const normalizedGroups = Array.isArray(groups)
+    ? groups.map((item, index) => {
+        const name =
+          typeof item?.name === "string" && item.name.trim()
+            ? item.name.trim()
+            : "";
+        const parsedGroupPoints = Number.parseInt(item?.points, 10);
+        const groupPoints = Number.isFinite(parsedGroupPoints)
+          ? parsedGroupPoints
+          : 0;
+        const parsedClientId = Number.parseInt(item?.id, 10);
+        const clientId = Number.isFinite(parsedClientId)
+          ? parsedClientId
+          : index + 1;
+        return {
+          clientId,
+          name,
+          points: groupPoints,
+          sortOrder: index + 1,
+        };
+      })
+    : [];
+
+  if (normalizedGroups.some((group) => !group.name)) {
+    res.status(400).json({ error: "Each group needs a name." });
+    return;
+  }
+
+  const groupNameSet = new Set();
+  for (const group of normalizedGroups) {
+    const key = group.name.toLowerCase();
+    if (groupNameSet.has(key)) {
+      res.status(400).json({ error: "Group names must be unique." });
+      return;
+    }
+    groupNameSet.add(key);
+  }
+
+  if (normalizedGroups.length > 0) {
+    const groupIdSet = new Set(normalizedGroups.map((group) => group.clientId));
+    if (
+      normalizedTestcases.some(
+        (item) => item.groupId == null || !groupIdSet.has(item.groupId)
+      )
+    ) {
+      res.status(400).json({
+        error: "Every testcase must belong to a valid group.",
+      });
+      return;
+    }
+  }
+
   const parsedTimeLimit = Number.parseInt(timeLimitMs, 10);
   const parsedMemoryLimit = Number.parseInt(memoryLimitKb, 10);
   const parsedDifficulty = Number.parseInt(difficulty, 10);
+  const parsedPoints = Number.parseInt(points, 10);
 
   const finalTimeLimit = Number.isFinite(parsedTimeLimit)
     ? parsedTimeLimit
@@ -290,10 +349,15 @@ app.post("/problems", async (req, res) => {
   const finalDifficulty = Number.isFinite(parsedDifficulty)
     ? parsedDifficulty
     : null;
+  const finalPoints = Number.isFinite(parsedPoints) ? parsedPoints : 100;
 
   const normalizedConstraints =
     typeof constraints === "string" && constraints.trim()
       ? constraints.trim()
+      : null;
+  const normalizedEditorial =
+    typeof editorial === "string" && editorial.trim()
+      ? editorial.trim()
       : null;
   const normalizedInputFormat =
     typeof inputFormat === "string" && inputFormat.trim()
@@ -337,9 +401,11 @@ app.post("/problems", async (req, res) => {
          slug,
          title,
          statement,
+         editorial,
          constraints,
          input_format,
          output_format,
+         points,
          judge_type,
          checker_language_key,
          checker_source,
@@ -351,15 +417,17 @@ app.post("/problems", async (req, res) => {
          is_visible,
          published_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE, NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, NOW())
        RETURNING id, slug`,
       [
         normalizedSlug,
         trimmedTitle,
         trimmedStatement,
+        normalizedEditorial,
         normalizedConstraints,
         normalizedInputFormat,
         normalizedOutputFormat,
+        finalPoints,
         safeJudgeType,
         resolvedCheckerLanguage,
         safeJudgeType === "custom" ? checkerSource.trim() : null,
@@ -373,13 +441,26 @@ app.post("/problems", async (req, res) => {
 
     const problemId = problemInsert.rows[0].id;
 
+    const groupIdMap = new Map();
+    for (const group of normalizedGroups) {
+      const groupInsert = await client.query(
+        `INSERT INTO testcase_groups
+          (problem_id, name, points, sort_order)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [problemId, group.name, group.points, group.sortOrder]
+      );
+      groupIdMap.set(group.clientId, groupInsert.rows[0].id);
+    }
+
     for (const testcase of normalizedTestcases) {
       await client.query(
         `INSERT INTO testcases
-          (problem_id, name, input, expected_output, is_sample, sort_order)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+          (problem_id, group_id, name, input, expected_output, is_sample, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           problemId,
+          testcase.groupId != null ? groupIdMap.get(testcase.groupId) : null,
           testcase.name,
           testcase.input,
           testcase.expectedOutput,
@@ -410,7 +491,7 @@ app.get("/problems/:id", async (req, res) => {
   try {
     const problemResult = await pool.query(
       `SELECT id, slug, title, statement, editorial, constraints, input_format, output_format,
-              time_limit_ms, memory_limit_kb, difficulty
+              time_limit_ms, memory_limit_kb, difficulty, points
        FROM problems
        WHERE ${isNumeric ? "id" : "slug"} = $1
        LIMIT 1`,
@@ -461,6 +542,7 @@ app.get("/problems/:id/submissions", async (req, res) => {
       `SELECT s.id,
               s.status,
               s.verdict,
+              s.score,
               s.exec_time_ms,
               s.memory_kb,
               s.source_code,
@@ -620,11 +702,17 @@ app.post("/submissions", async (req, res) => {
   const codeLength = sourceCode.length;
 
   const client = await pool.connect();
+  let submissionId = null;
+  let problem = null;
+  let language = null;
+  let testcases = [];
+  let checker = null;
   try {
     const problemResult = await client.query(
       `SELECT id,
               time_limit_ms,
               memory_limit_kb,
+              points,
               judge_type,
               checker_language_key,
               checker_source
@@ -638,7 +726,7 @@ app.post("/submissions", async (req, res) => {
       return;
     }
 
-    const problem = problemResult.rows[0];
+    problem = problemResult.rows[0];
 
     const languageResult = await client.query(
       `SELECT id, key, name, source_ext, compile_command, run_command,
@@ -653,7 +741,8 @@ app.post("/submissions", async (req, res) => {
       return;
     }
 
-    let checker = null;
+    language = languageResult.rows[0];
+
     if (problem.judge_type === "custom") {
       if (!problem.checker_language_key || !problem.checker_source) {
         res.status(500).json({ error: "Checker is not configured." });
@@ -680,90 +769,113 @@ app.post("/submissions", async (req, res) => {
     }
 
     const testcasesResult = await client.query(
-      `SELECT id, name, input, expected_output
-       FROM testcases
-       WHERE problem_id = $1
-       ORDER BY sort_order, id`,
+      `SELECT t.id,
+              t.name,
+              t.input,
+              t.expected_output,
+              t.group_id,
+              g.points AS group_points
+       FROM testcases t
+       LEFT JOIN testcase_groups g ON g.id = t.group_id
+       WHERE t.problem_id = $1
+       ORDER BY t.sort_order, t.id`,
       [problemId]
     );
+    testcases = testcasesResult.rows;
 
     const submissionResult = await client.query(
       `INSERT INTO submissions (problem_id, language_id, source_code, status)
        VALUES ($1, $2, $3, $4)
        RETURNING id`,
-      [problemId, languageResult.rows[0].id, sourceCode, "Judging"]
+      [problemId, language.id, sourceCode, "Judging"]
     );
 
-    const submissionId = submissionResult.rows[0].id;
+    submissionId = submissionResult.rows[0].id;
 
-    const judgeResult = await judgeSubmission({
-      language: languageResult.rows[0],
-      problem,
-      testcases: testcasesResult.rows,
-      sourceCode,
-      checker,
-    });
-
-    await client.query("BEGIN");
-
-    for (const result of judgeResult.results) {
-      await client.query(
-        `INSERT INTO submission_results
-          (submission_id, testcase_id, status, exec_time_ms, memory_kb, output, error)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          submissionId,
-          result.testcaseId,
-          result.status,
-          result.execTimeMs,
-          result.memoryKb,
-          result.output,
-          result.error,
-        ]
-      );
-    }
-
-    await client.query(
-      `UPDATE submissions
-       SET status = $1,
-           verdict = $1,
-           exec_time_ms = $2,
-           memory_kb = $3,
-           compiler_output = $4,
-           judged_at = NOW()
-       WHERE id = $5`,
-      [
-        judgeResult.verdict,
-        judgeResult.maxTimeMs,
-        judgeResult.maxMemoryKb,
-        judgeResult.compileOutput,
-        submissionId,
-      ]
-    );
-
-    await client.query("COMMIT");
-
-    res.json({
+    res.status(202).json({
       submissionId,
-      verdict: judgeResult.verdict,
-      compilerOutput: judgeResult.compileOutput,
+      status: "Judging",
       codeLength,
-      results: judgeResult.results.map((result) => ({
-        testcaseId: result.testcaseId,
-        name: result.name,
-        status: result.status,
-        execTimeMs: result.execTimeMs,
-        memoryKb: result.memoryKb,
-        output: result.output,
-        error: result.error,
-      })),
     });
   } catch {
-    await client.query("ROLLBACK");
     res.status(500).json({ error: "Failed to judge submission." });
   } finally {
     client.release();
   }
+
+  if (!submissionId || !problem || !language) {
+    return;
+  }
+
+  const runJudge = async () => {
+    const judgeClient = await pool.connect();
+    try {
+      const judgeResult = await judgeSubmission({
+        language,
+        problem,
+        testcases,
+        sourceCode,
+        checker,
+        onResult: async (result) => {
+          await judgeClient.query(
+            `INSERT INTO submission_results
+              (submission_id, testcase_id, status, exec_time_ms, memory_kb, output, error)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              submissionId,
+              result.testcaseId,
+              result.status,
+              result.execTimeMs,
+              result.memoryKb,
+              result.output,
+              result.error,
+            ]
+          );
+        },
+      });
+
+      await judgeClient.query(
+        `UPDATE submissions
+         SET status = $1,
+             verdict = $1,
+             exec_time_ms = $2,
+             memory_kb = $3,
+             compiler_output = $4,
+             score = $5,
+             judged_at = NOW()
+         WHERE id = $6`,
+        [
+          judgeResult.verdict,
+          judgeResult.maxTimeMs,
+          judgeResult.maxMemoryKb,
+          judgeResult.compileOutput,
+          judgeResult.score ?? 0,
+          submissionId,
+        ]
+      );
+    } catch (error) {
+      await judgeClient.query(
+        `UPDATE submissions
+         SET status = $1,
+             verdict = $1,
+             compiler_output = $2,
+             score = 0,
+             judged_at = NOW()
+         WHERE id = $3`,
+        [
+          "System Error",
+          error instanceof Error ? error.message : "Judge failed.",
+          submissionId,
+        ]
+      );
+    } finally {
+      judgeClient.release();
+    }
+  };
+
+  setImmediate(() => {
+    void runJudge();
+  });
 });
 
 app.get("/submissions/:id", async (req, res) => {
@@ -771,7 +883,7 @@ app.get("/submissions/:id", async (req, res) => {
   try {
     const submissionResult = await pool.query(
       `SELECT id, problem_id, language_id, status, verdict, exec_time_ms,
-              compiler_output, created_at, judged_at
+              compiler_output, score, created_at, judged_at
        FROM submissions
        WHERE id = $1`,
       [id]
@@ -782,17 +894,64 @@ app.get("/submissions/:id", async (req, res) => {
       return;
     }
 
+    const submission = submissionResult.rows[0];
+
     const results = await pool.query(
-      `SELECT testcase_id, status, exec_time_ms, output, error
-       FROM submission_results
-       WHERE submission_id = $1
-       ORDER BY id`,
+      `SELECT r.testcase_id,
+              t.name,
+              t.group_id,
+              g.name AS group_name,
+              g.points AS group_points,
+              r.status,
+              r.exec_time_ms,
+              r.memory_kb,
+              r.output,
+              r.error
+       FROM submission_results r
+       JOIN testcases t ON t.id = r.testcase_id
+       LEFT JOIN testcase_groups g ON g.id = t.group_id
+       WHERE r.submission_id = $1
+       ORDER BY r.id`,
       [id]
     );
 
+    const totalResult = await pool.query(
+      `SELECT COUNT(*)::int AS total
+       FROM testcases
+       WHERE problem_id = $1`,
+      [submission.problem_id]
+    );
+
+    const groupPointsResult = await pool.query(
+      `SELECT SUM(points)::int AS total
+       FROM testcase_groups
+       WHERE problem_id = $1`,
+      [submission.problem_id]
+    );
+
+    let totalScore = groupPointsResult.rows[0]?.total ?? null;
+    if (totalScore == null) {
+      const problemPoints = await pool.query(
+        `SELECT points FROM problems WHERE id = $1`,
+        [submission.problem_id]
+      );
+      totalScore = problemPoints.rows[0]?.points ?? null;
+    }
+
+    const groupsResult = await pool.query(
+      `SELECT id, name, points
+       FROM testcase_groups
+       WHERE problem_id = $1
+       ORDER BY sort_order, id`,
+      [submission.problem_id]
+    );
+
     res.json({
-      submission: submissionResult.rows[0],
+      submission,
       results: results.rows,
+      totalTestcases: totalResult.rows[0]?.total ?? results.rows.length,
+      totalScore,
+      groups: groupsResult.rows,
     });
   } catch {
     res.status(500).json({ error: "Failed to load submission." });

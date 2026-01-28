@@ -5,6 +5,8 @@ import SubmissionForm from "./submission-form";
 import SubmissionHistory from "./submission-history";
 import ProblemBoard from "./problem-board";
 import CodeTest from "./code-test";
+import MarkdownPreview from "@/components/markdown-preview";
+import LatestVerdict from "./latest-verdict";
 
 type ProblemDetail = {
   id: number;
@@ -18,6 +20,7 @@ type ProblemDetail = {
   time_limit_ms: number;
   memory_limit_kb: number;
   difficulty: number | null;
+  points: number;
 };
 
 type SampleCase = {
@@ -41,6 +44,7 @@ type ProblemTabsProps = {
 
 const tabs = [
   { id: "verdict", label: "Verdict" },
+  { id: "latest", label: "Latest Verdict" },
   { id: "code-test", label: "Code Test" },
   { id: "editorial", label: "Explanation" },
   { id: "submissions", label: "Submissions" },
@@ -55,6 +59,14 @@ export default function ProblemTabs({
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]["id"]>(
     "verdict"
   );
+  const [latestSubmissionId, setLatestSubmissionId] = useState<number | null>(
+    null
+  );
+
+  const handleSubmitted = (submissionId: number) => {
+    setLatestSubmissionId(submissionId);
+    setActiveTab("latest");
+  };
 
   return (
     <div className="space-y-6">
@@ -83,6 +95,9 @@ export default function ProblemTabs({
           <span className="rounded-full bg-amber-100 px-3 py-1">
             Problem {problem.id}
           </span>
+          <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-700">
+            {problem.points} pts
+          </span>
           <span className="rounded-full bg-slate-100 px-3 py-1">
             {problem.time_limit_ms} ms
           </span>
@@ -96,7 +111,11 @@ export default function ProblemTabs({
         <h1 className="text-3xl font-semibold sm:text-4xl">
           {problem.title}
         </h1>
-        <p className="text-base text-slate-700">{problem.statement}</p>
+        <MarkdownPreview
+          content={problem.statement}
+          variant="plain"
+          className="text-base text-slate-700"
+        />
       </header>
 
       {activeTab === "verdict" ? (
@@ -108,19 +127,34 @@ export default function ProblemTabs({
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
                   Constraints
                 </p>
-                <p>{problem.constraints ?? "Not specified."}</p>
+                <MarkdownPreview
+                  content={problem.constraints ?? ""}
+                  emptyLabel="Not specified."
+                  variant="plain"
+                  className="text-sm text-slate-700"
+                />
               </div>
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
                   Input
                 </p>
-                <p>{problem.input_format ?? "Not specified."}</p>
+                <MarkdownPreview
+                  content={problem.input_format ?? ""}
+                  emptyLabel="Not specified."
+                  variant="plain"
+                  className="text-sm text-slate-700"
+                />
               </div>
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
                   Output
                 </p>
-                <p>{problem.output_format ?? "Not specified."}</p>
+                <MarkdownPreview
+                  content={problem.output_format ?? ""}
+                  emptyLabel="Not specified."
+                  variant="plain"
+                  className="text-sm text-slate-700"
+                />
               </div>
             </div>
           </div>
@@ -167,7 +201,11 @@ export default function ProblemTabs({
             <p className="mt-2 text-sm text-slate-600">
               Choose a language, paste your code, and run the local judge.
             </p>
-            <SubmissionForm problemId={problem.id} languages={languages} />
+            <SubmissionForm
+              problemId={problem.id}
+              languages={languages}
+              onSubmitted={handleSubmitted}
+            />
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white/80 p-6 text-xs text-slate-600">
@@ -181,13 +219,21 @@ export default function ProblemTabs({
         </div>
       ) : null}
 
+      {activeTab === "latest" ? (
+        <LatestVerdict submissionId={latestSubmissionId} />
+      ) : null}
+
       {activeTab === "editorial" ? (
         <div className="rounded-2xl border border-slate-200 bg-white/80 p-6 shadow-sm">
           <h2 className="text-lg font-semibold">Explanation</h2>
-          <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">
-            {problem.editorial ??
-              "No editorial has been published for this problem yet."}
-          </p>
+          <div className="mt-3">
+            <MarkdownPreview
+              content={problem.editorial ?? ""}
+              emptyLabel="No editorial has been published for this problem yet."
+              variant="plain"
+              className="text-sm text-slate-700"
+            />
+          </div>
         </div>
       ) : null}
 

@@ -17,6 +17,7 @@ type ProblemDetail = {
   time_limit_ms: number;
   memory_limit_kb: number;
   difficulty: number | null;
+  points: number;
 };
 
 type SampleCase = {

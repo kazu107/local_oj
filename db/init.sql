@@ -41,6 +41,7 @@ CREATE TABLE problems (
   constraints TEXT,
   input_format TEXT,
   output_format TEXT,
+  points INTEGER NOT NULL DEFAULT 100,
   judge_type TEXT NOT NULL DEFAULT 'default',
   checker_language_key TEXT,
   checker_source TEXT,
@@ -55,9 +56,19 @@ CREATE TABLE problems (
   published_at TIMESTAMPTZ
 );
 
+CREATE TABLE testcase_groups (
+  id BIGSERIAL PRIMARY KEY,
+  problem_id BIGINT NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  points INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE testcases (
   id BIGSERIAL PRIMARY KEY,
   problem_id BIGINT NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+  group_id BIGINT REFERENCES testcase_groups(id) ON DELETE SET NULL,
   name TEXT,
   input TEXT NOT NULL,
   expected_output TEXT NOT NULL,
@@ -147,6 +158,8 @@ CREATE TABLE contest_registrations (
 );
 
 CREATE INDEX idx_testcases_problem_id ON testcases(problem_id);
+CREATE INDEX idx_testcases_group_id ON testcases(group_id);
+CREATE INDEX idx_testcase_groups_problem_id ON testcase_groups(problem_id);
 CREATE INDEX idx_submissions_problem_id ON submissions(problem_id);
 CREATE INDEX idx_submissions_user_id ON submissions(user_id);
 CREATE INDEX idx_submission_results_submission_id ON submission_results(submission_id);
@@ -239,6 +252,7 @@ new_problem AS (
   constraints,
   input_format,
   output_format,
+  points,
     time_limit_ms,
     memory_limit_kb,
     difficulty,
@@ -255,6 +269,7 @@ new_problem AS (
   '1 <= A, B <= 10^9',
     'A B',
     'A + B',
+    100,
     2000,
     262144,
     100,
@@ -295,6 +310,7 @@ WITH custom_problem AS (
     constraints,
     input_format,
     output_format,
+    points,
     judge_type,
     checker_language_key,
     checker_source,
@@ -314,6 +330,7 @@ WITH custom_problem AS (
     '1 <= N <= 100000',
     'N',
     'Any permutation of 1..N (space-separated).',
+    100,
     'custom',
     'nodejs',
     $$const fs = require("fs");
@@ -388,5 +405,136 @@ INSERT INTO problem_messages (problem_id, author_name, body)
 SELECT id, 'Staff', 'This problem uses a custom checker that validates permutations.'
 FROM problems
 WHERE slug = 'any-permutation';
+
+WITH partial_problem AS (
+  INSERT INTO problems (
+    slug,
+    title,
+    statement,
+    editorial,
+    constraints,
+    input_format,
+    output_format,
+    points,
+    time_limit_ms,
+    memory_limit_kb,
+    difficulty,
+    source,
+    author_id,
+    is_visible,
+    published_at
+  )
+  SELECT
+    'array-sum',
+    'Array Sum',
+    'Given an integer N and N integers, output the sum of the array.',
+    'Use 64-bit integers to avoid overflow on large values.',
+    '1 <= N <= 10^5, |Ai| <= 10^9',
+    'N\\nA1 A2 ... AN',
+    'Sum of the array as a 64-bit integer.',
+    100,
+    2000,
+    262144,
+    120,
+    'sample',
+    (SELECT id FROM users WHERE username = 'guest'),
+    TRUE,
+    NOW()
+  RETURNING id
+),
+group_data AS (
+  INSERT INTO testcase_groups (problem_id, name, points, sort_order)
+  SELECT partial_problem.id, data.name, data.points, data.sort_order
+  FROM partial_problem
+  CROSS JOIN (
+    VALUES
+      ('Small', 25, 1),
+      ('Medium', 35, 2),
+      ('Large', 40, 3)
+  ) AS data(name, points, sort_order)
+  RETURNING id, name
+),
+test_data AS (
+  SELECT * FROM (
+    VALUES
+      ('Small', 'Sample 1', E'3\\n1 2 3\\n', E'6\\n', TRUE, 1),
+      ('Small', 'Sample 2', E'5\\n10 20 30 40 50\\n', E'150\\n', TRUE, 2),
+      ('Small', 'Small 1', E'4\\n7 8 9 10\\n', E'34\\n', FALSE, 3),
+      ('Medium', 'Medium 1', E'6\\n100 200 300 400 500 600\\n', E'2100\\n', FALSE, 4),
+      ('Large', 'Large 1', E'3\\n1000000000 1000000000 1000000000\\n', E'3000000000\\n', FALSE, 5)
+  ) AS data(group_name, name, input, expected_output, is_sample, sort_order)
+)
+INSERT INTO testcases (problem_id, group_id, name, input, expected_output, is_sample, sort_order)
+SELECT
+  partial_problem.id,
+  group_data.id,
+  test_data.name,
+  test_data.input,
+  test_data.expected_output,
+  test_data.is_sample,
+  test_data.sort_order
+FROM partial_problem
+JOIN test_data ON TRUE
+JOIN group_data ON group_data.name = test_data.group_name;
+
+WITH array_problem AS (
+  SELECT id FROM problems WHERE slug = 'array-sum' LIMIT 1
+),
+group_lookup AS (
+  SELECT id, name
+  FROM testcase_groups
+  WHERE problem_id = (SELECT id FROM array_problem)
+),
+generated_cases AS (
+  SELECT
+    gs AS idx,
+    CASE
+      WHEN gs <= 30 THEN 'Small'
+      WHEN gs <= 70 THEN 'Medium'
+      ELSE 'Large'
+    END AS group_name,
+    CASE
+      WHEN gs <= 30 THEN 5
+      WHEN gs <= 70 THEN 40
+      ELSE 100
+    END AS n_value
+  FROM generate_series(1, 95) AS gs
+),
+numbers AS (
+  SELECT
+    generated_cases.idx,
+    generated_cases.group_name,
+    generated_cases.n_value,
+    series AS position,
+    ((generated_cases.idx * 137 + series * 97) % 2001) - 1000 AS value
+  FROM generated_cases
+  JOIN LATERAL generate_series(1, generated_cases.n_value) AS series ON TRUE
+),
+assembled AS (
+  SELECT
+    idx,
+    group_name,
+    n_value,
+    string_agg(value::text, ' ' ORDER BY position) AS values_text,
+    SUM(value)::bigint AS sum_value
+  FROM numbers
+  GROUP BY idx, group_name, n_value
+)
+INSERT INTO testcases (problem_id, group_id, name, input, expected_output, is_sample, sort_order)
+SELECT
+  (SELECT id FROM array_problem),
+  group_lookup.id,
+  format('%s %s', group_name, idx),
+  format(E'%s\\n%s\\n', assembled.n_value, assembled.values_text),
+  format(E'%s\\n', assembled.sum_value),
+  FALSE,
+  100 + assembled.idx
+FROM assembled
+JOIN group_lookup ON group_lookup.name = assembled.group_name;
+
+INSERT INTO problem_messages (problem_id, author_name, body)
+SELECT id, 'Staff', 'This problem includes partial scoring by testcase groups.'
+FROM problems
+WHERE slug = 'array-sum';
 
 COMMIT;

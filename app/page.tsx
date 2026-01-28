@@ -10,6 +10,7 @@ type ProblemSummary = {
   difficulty: number | null;
   time_limit_ms: number;
   memory_limit_kb: number;
+  points: number;
 };
 
 async function fetchProblems(): Promise<ProblemSummary[]> {
@@ -78,6 +79,9 @@ export default async function Home() {
                       </h3>
                     </div>
                     <div className="flex flex-wrap gap-2 text-xs font-semibold text-slate-700">
+                      <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-700">
+                        {problem.points} pts
+                      </span>
                       <span className="rounded-full bg-amber-100 px-3 py-1">
                         Diff {problem.difficulty ?? "?"}
                       </span>

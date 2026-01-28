@@ -6,6 +6,7 @@ type SubmissionSummary = {
   id: number;
   status: string;
   verdict: string | null;
+  score: number | null;
   exec_time_ms: number | null;
   memory_kb: number | null;
   code_length: number | null;
@@ -124,6 +125,7 @@ export default function SubmissionHistory({ problemId }: SubmissionHistoryProps)
                 <tr>
                   <th className="py-2 pr-4">ID</th>
                   <th className="py-2 pr-4">Verdict</th>
+                  <th className="py-2 pr-4">Score</th>
                   <th className="py-2 pr-4">Language</th>
                   <th className="py-2 pr-4">Code</th>
                   <th className="py-2 pr-4">Time</th>
@@ -143,6 +145,9 @@ export default function SubmissionHistory({ problemId }: SubmissionHistoryProps)
                         </td>
                         <td className="py-3 pr-4">
                           {submission.verdict ?? submission.status}
+                        </td>
+                        <td className="py-3 pr-4">
+                          {submission.score != null ? submission.score : "-"}
                         </td>
                         <td className="py-3 pr-4">
                           {submission.language_name}
@@ -174,7 +179,7 @@ export default function SubmissionHistory({ problemId }: SubmissionHistoryProps)
                       </tr>
                       {isExpanded ? (
                         <tr>
-                          <td className="py-3 pr-2" colSpan={8}>
+                          <td className="py-3 pr-2" colSpan={9}>
                             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                               <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-slate-800">
                                 {submission.source_code}
