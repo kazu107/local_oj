@@ -128,6 +128,7 @@ export default function CodeTest({ problemId, languages }: CodeTestProps) {
           <CodeEditor
             label="Test Code"
             languageLabel={selectedLanguage?.name ?? languageKey}
+            languageKey={languageKey}
             value={code}
             onChange={setCode}
             height="280px"

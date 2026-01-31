@@ -111,17 +111,20 @@ export default function SubmissionForm({
         </select>
       </label>
 
-      <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-        Source Code
+      <div>
+        <span className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+          Source Code
+        </span>
         <div className="mt-3">
           <CodeEditor
             label="Submission Code"
             languageLabel={selectedLanguage?.name ?? languageKey}
+            languageKey={languageKey}
             value={code}
             onChange={setCode}
           />
         </div>
-      </label>
+      </div>
 
       <button
         type="submit"

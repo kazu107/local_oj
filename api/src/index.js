@@ -548,7 +548,8 @@ app.get("/problems/:id/submissions", async (req, res) => {
               s.source_code,
               length(s.source_code) AS code_length,
               s.created_at,
-              l.name AS language_name
+              l.name AS language_name,
+              l.key AS language_key
        FROM submissions s
        JOIN languages l ON l.id = s.language_id
        WHERE s.problem_id = $1

@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
+import CodeBlock from "@/components/code-block";
 
 type SubmissionSummary = {
   id: number;
@@ -13,6 +14,7 @@ type SubmissionSummary = {
   source_code: string;
   created_at: string;
   language_name: string;
+  language_key: string;
 };
 
 type SubmissionHistoryProps = {
@@ -181,9 +183,10 @@ export default function SubmissionHistory({ problemId }: SubmissionHistoryProps)
                         <tr>
                           <td className="py-3 pr-2" colSpan={9}>
                             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                              <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-slate-800">
-                                {submission.source_code}
-                              </pre>
+                              <CodeBlock
+                                code={submission.source_code}
+                                languageKey={submission.language_key}
+                              />
                             </div>
                           </td>
                         </tr>
